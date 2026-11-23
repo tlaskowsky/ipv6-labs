@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# labsh - what a student sees after SSH login. Pick a lab and a node.
+# Shortcut:  ssh student07@HOST "2 r1"   goes straight to lab 2, node r1.
+# On a one-student host (Session Manager login) students type:  lab   (or: lab 2 r1)
+declare -A NODES=([1]="pc1 pc2 r1" [2]="pc1 r1 r2 pc2" [3]="pc1 r1 inet r2 pc2")
+go() { sudo /usr/local/sbin/lab-enter "$1" "$2"; }
+
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  read -r l n _ <<< "$SSH_ORIGINAL_COMMAND"; go "$l" "$n"; exit; fi
+if [ $# -eq 2 ]; then go "$1" "$2"; exit; fi
+
+while true; do
+  echo
+  echo "=== IPv6 labs ($USER) ==="
+  echo " 1) Lab 1  Link-local, Neighbor Discovery, SLAAC   nodes: ${NODES[1]}"
+  echo " 2) Lab 2  Routing between LANs, dual stack       nodes: ${NODES[2]}"
+  echo " 3) Lab 3  IPv6 over IPv4 tunnels (GRE, 6in4)     nodes: ${NODES[3]}"
+  echo " q) Quit this menu"
+  read -rp "Lab: " l || exit 0
+  [ "$l" = q ] && exit 0
+  [ -n "${NODES[$l]:-}" ] || { echo "Pick 1, 2, 3 or q"; continue; }
+  read -rp "Node (${NODES[$l]}): " n || exit 0
+  echo "(type 'exit' to come back to this menu)"
+  go "$l" "$n"
+done

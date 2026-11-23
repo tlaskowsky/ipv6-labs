@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# lab-enter <lab> <node> : root helper that opens a shell on the calling
+# student's own lab node. Students run it only through sudo (see host-setup.sh);
+# it never takes a student number from the user, only from SUDO_USER.
+set -euo pipefail
+u=${SUDO_USER:-}
+if [ -f /etc/ipv6lab/student ]; then
+  # One-student host (one AWS account per student, Session Manager login):
+  # whoever is logged in works on this host's only student.
+  S=$(tr -dc 0-9 < /etc/ipv6lab/student)
+  [[ $S =~ ^[0-9]{2}$ ]] || { echo "bad /etc/ipv6lab/student" >&2; exit 1; }
+else
+  [[ $u =~ ^student([0-9]{2})$ ]] || { echo "not a lab student" >&2; exit 1; }
+  S=${BASH_REMATCH[1]}
+fi
+lab=${1:-}; node=${2:-}
+case "$lab" in
+  1) nodes="pc1 pc2 r1" ;;
+  2) nodes="pc1 r1 r2 pc2" ;;
+  3) nodes="pc1 r1 inet r2 pc2" ;;
+  *) echo "lab must be 1, 2 or 3" >&2; exit 1 ;;
+esac
+[[ " $nodes " == *" $node "* ]] || { echo "lab $lab nodes: $nodes" >&2; exit 1; }
+c="s$S-l$lab-$node"
+docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true \
+  || { echo "lab $lab is not running for you, ask the instructor" >&2; exit 1; }
+t=-i; [ -t 0 ] && t=-it
+exec docker exec $t -e LAB_STUDENT="s$S" -e TERM="${TERM:-xterm}" "$c" bash

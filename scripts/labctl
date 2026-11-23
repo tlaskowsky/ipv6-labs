@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# labctl - build, reset, solve and check the IPv6 container labs.
+# Run as root (sudo) on the lab host.
+#
+#   labctl deploy  <lab|all> <students>   e.g. labctl deploy all 1-15,99
+#   labctl destroy <lab|all> <students|all>
+#   labctl reset   <lab> <student>        fresh copy of one lab for one student
+#   labctl solve   <lab> <student>        apply the answer key (instructor test)
+#   labctl check   <lab> <student>        PASS/FAIL checks
+#   labctl enter   <lab> <student> <node> open a shell on a node (instructor)
+#   labctl accounts <students>            create student01.. logins + passwords
+#   labctl status                         what is running
+#
+# <lab> is 1, 2 or 3. Student 99 is the instructor test student.
+set -uo pipefail
+
+LABDIR=${LABDIR:-/opt/ipv6lab}
+IMAGE=${IMAGE:-ipv6lab/node:1}
+ACCOUNTS_FILE=/root/ipv6lab-accounts.txt
+
+die() { echo "labctl: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run with sudo"
+
+# ---------- helpers ----------
+expand_students() {            # "1-3,7" -> "01 02 03 07"
+  local out="" part a b i
+  IFS=',' read -ra parts <<< "$1"
+  for part in "${parts[@]}"; do
+    if [[ $part =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      a=$((10#${BASH_REMATCH[1]})); b=$((10#${BASH_REMATCH[2]}))
+      for ((i=a; i<=b; i++)); do out+="$(printf '%02d' "$i") "; done
+    elif [[ $part =~ ^[0-9]+$ ]]; then
+      out+="$(printf '%02d' $((10#$part))) "
+    else die "bad student list: $1"; fi
+  done
+  echo "$out"
+}
+expand_labs() { [ "$1" = all ] && echo "1 2 3" || { [[ $1 =~ ^[123]$ ]] || die "lab must be 1, 2, 3 or all"; echo "$1"; }; }
+cname() { echo "s$1-l$2-$3"; }                       # s07-l2-r1
+cpid()  { docker inspect -f '{{.State.Pid}}' "$1"; }
+
+# X <node> <command...> : run a command on a node of the current lab/student
+X() { local n=$1; shift; docker exec "$(cname "$S" "$LAB" "$n")" bash -c "$*"; }
+# XD : same but detached (for daemons like the web server)
+XD() { local n=$1; shift; docker exec -d "$(cname "$S" "$LAB" "$n")" bash -c "$*"; }
+
+HAVE_V6=0; [ -d /proc/sys/net/ipv6 ] && HAVE_V6=1
+
+start_node() {   # start_node <node> [noipv6] [v4fwd]
+  local node=$1; shift; local c; c=$(cname "$S" "$LAB" "$node")
+  local opts=(); local dis=0
+  for o in "$@"; do
+    case $o in
+      noipv6) dis=1 ;;
+      v4fwd)  opts+=(--sysctl net.ipv4.ip_forward=1) ;;
+    esac
+  done
+  if [ $HAVE_V6 = 1 ]; then
+    opts+=(--sysctl net.ipv6.conf.all.disable_ipv6=$dis --sysctl net.ipv6.conf.default.disable_ipv6=$dis)
+  fi
+  docker run -d --name "$c" --hostname "$node" --network none --init \
+    --cap-add NET_ADMIN --cap-add NET_RAW --security-opt systempaths=unconfined --security-opt apparmor=unconfined \
+    --memory 128m --pids-limit 200 \
+    --label ipv6lab=1 --label ipv6lab.student="$S" --label ipv6lab.lab="$LAB" \
+    "${opts[@]}" "$IMAGE" >/dev/null || die "could not start $c"
+}
+
+LINKNO=0
+L() {   # L <nodeA> <ifA> <macA|-> <nodeB> <ifB> <macB|->
+  local na=$1 ia=$2 ma=$3 nb=$4 ib=$5 mb=$6
+  local pa pb ta tb
+  pa=$(cpid "$(cname "$S" "$LAB" "$na")"); pb=$(cpid "$(cname "$S" "$LAB" "$nb")")
+  LINKNO=$((LINKNO+1)); ta="v${S}${LAB}x${LINKNO}a"; tb="v${S}${LAB}x${LINKNO}b"
+  ip link add "$ta" type veth peer name "$tb" || die "veth failed"
+  ip link set "$ta" netns "$pa"; ip link set "$tb" netns "$pb"
+  nsenter -t "$pa" -n ip link set "$ta" name "$ia"
+  nsenter -t "$pb" -n ip link set "$tb" name "$ib"
+  [ "$ma" != - ] && nsenter -t "$pa" -n ip link set "$ia" address "$ma"
+  [ "$mb" != - ] && nsenter -t "$pb" -n ip link set "$ib" address "$mb"
+  nsenter -t "$pa" -n ip link set "$ia" up
+  nsenter -t "$pb" -n ip link set "$ib" up
+}
+
+# check helpers
+PASSN=0; FAILN=0
+ok()   { echo "  PASS  $*"; PASSN=$((PASSN+1)); }
+bad()  { echo "  FAIL  $*"; FAILN=$((FAILN+1)); }
+expect() { local desc=$1; shift; if "$@" >/dev/null 2>&1; then ok "$desc"; else bad "$desc"; fi; }
+retry() { local n=$1; shift; local i; for ((i=0;i<n;i++)); do "$@" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
+
+load_lab() { LAB=$1; source "$LABDIR/labs/lab$LAB.sh" || die "missing lab$LAB.sh"; }
+
+deploy_one() {   # S and LAB set
+  if docker ps -a --format '{{.Names}}' | grep -q "^s$S-l$LAB-"; then
+    echo "  s$S lab $LAB already exists (use reset)"; return; fi
+  LINKNO=0
+  lab_nodes_start
+  lab_links
+  lab_prestage
+  echo "  s$S lab $LAB ready"
+}
+destroy_one() {
+  local ids; ids=$(docker ps -aq --filter label=ipv6lab.student="$S" --filter label=ipv6lab.lab="$LAB")
+  [ -n "$ids" ] && docker rm -f $ids >/dev/null
+  echo "  s$S lab $LAB removed"
+}
+
+# ---------- commands ----------
+cmd=${1:-}; shift || true
+case $cmd in
+  deploy)
+    [ $# -eq 2 ] || die "usage: labctl deploy <lab|all> <students>"
+    for LAB in $(expand_labs "$1"); do load_lab "$LAB"
+      for S in $(expand_students "$2"); do deploy_one; done; done ;;
+  destroy)
+    [ $# -eq 2 ] || die "usage: labctl destroy <lab|all> <students|all>"
+    if [ "$2" = all ]; then
+      for LAB in $(expand_labs "$1"); do
+        ids=$(docker ps -aq --filter label=ipv6lab.lab="$LAB"); [ -n "$ids" ] && docker rm -f $ids >/dev/null
+        echo "  lab $LAB removed for everyone"; done
+    else
+      for LAB in $(expand_labs "$1"); do for S in $(expand_students "$2"); do destroy_one; done; done
+    fi ;;
+  reset)
+    [ $# -eq 2 ] || die "usage: labctl reset <lab> <student>"
+    load_lab "$1"; S=$(expand_students "$2"); S=${S// /}; destroy_one; deploy_one ;;
+  solve)
+    [ $# -eq 2 ] || die "usage: labctl solve <lab> <student>"
+    load_lab "$1"; S=$(expand_students "$2"); S=${S// /}
+    echo "Applying answer key: lab $LAB, student s$S"; lab_solve; echo "done" ;;
+  check)
+    [ $# -eq 2 ] || die "usage: labctl check <lab> <student>"
+    load_lab "$1"; S=$(expand_students "$2"); S=${S// /}
+    echo "Checking lab $LAB, student s$S"; lab_check
+    echo "Result: $PASSN passed, $FAILN failed"; [ $FAILN -eq 0 ] ;;
+  enter)
+    [ $# -eq 3 ] || die "usage: labctl enter <lab> <student> <node>"
+    S=$(expand_students "$2"); S=${S// /}
+    exec docker exec -it -e LAB_STUDENT="s$S" "$(cname "$S" "$1" "$3")" bash ;;
+  accounts)
+    [ $# -eq 1 ] || die "usage: labctl accounts <students>"
+    getent group labstudents >/dev/null || groupadd labstudents
+    touch "$ACCOUNTS_FILE"; chmod 600 "$ACCOUNTS_FILE"
+    for S in $(expand_students "$1"); do
+      u="student$S"
+      if id "$u" >/dev/null 2>&1; then echo "  $u exists"; continue; fi
+      pw=$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 10)
+      useradd -m -s /bin/bash -G labstudents "$u"
+      echo "$u:$pw" | chpasswd
+      echo "$u  $pw" >> "$ACCOUNTS_FILE"; echo "  $u created"
+    done
+    echo "Logins and passwords: $ACCOUNTS_FILE" ;;
+  status)
+    docker ps --filter label=ipv6lab=1 --format '{{.Label "ipv6lab.student"}} lab{{.Label "ipv6lab.lab"}}' \
+      | sort | uniq -c | awk '{print "  s"$2" "$3": "$1" containers"}'
+    echo "  total containers: $(docker ps -q --filter label=ipv6lab=1 | wc -l)" ;;
+  *) sed -n '2,16p' "$0"; exit 1 ;;
+esac
