@@ -46,13 +46,14 @@ XD() { local n=$1; shift; docker exec -d "$(cname "$S" "$LAB" "$n")" bash -c "$*
 
 HAVE_V6=0; [ -d /proc/sys/net/ipv6 ] && HAVE_V6=1
 
-start_node() {   # start_node <node> [noipv6] [v4fwd]
+start_node() {   # start_node <node> [noipv6] [v4fwd] [tun]
   local node=$1; shift; local c; c=$(cname "$S" "$LAB" "$node")
   local opts=(); local dis=0
   for o in "$@"; do
     case $o in
       noipv6) dis=1 ;;
       v4fwd)  opts+=(--sysctl net.ipv4.ip_forward=1) ;;
+      tun)    opts+=(--device /dev/net/tun) ;;   # tayga (NAT64) on Lab 2's r2
     esac
   done
   if [ $HAVE_V6 = 1 ]; then

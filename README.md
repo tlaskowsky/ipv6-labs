@@ -5,8 +5,8 @@ Three hands-on IPv6 labs that run on plain Linux containers. Each student gets t
 | Lab | Topic | Nodes |
 |---|---|---|
 | 1 | Link-local, Neighbor Discovery, SLAAC, DAD, privacy addresses | pc1, pc2, r1 |
-| 2 | Routing between two LANs, dual stack, Path MTU (Day 1-2 topics only) | pc1, r1, r2, pc2 |
-| 3 | IPv6 over IPv4: GRE and 6in4 tunnels, MTU and Packet Too Big; bonus: ICMPv6 errors, DHCPv6, firewalls, rogue RA (Day 3 topics) | pc1, r1, inet, r2, pc2 |
+| 2 | Routing between two LANs, dual stack, address selection, Path MTU, NAT64/DNS64 (r2 runs tayga and unbound; Day 1-2 topics only) | pc1, r1, r2, pc2 |
+| 3 | IPv6 over IPv4: GRE and 6in4 tunnels, MTU and Packet Too Big; then Day 3 topics: IPAM, ICMPv6 errors, PMTU black hole, troubleshooting, DHCPv6, firewalls, rogue RA | pc1, r1, inet, r2, pc2 |
 
 ## How it works
 

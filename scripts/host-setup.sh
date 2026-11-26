@@ -27,7 +27,7 @@ systemctl enable --now docker
 docker info >/dev/null || { echo "   Docker is installed but not running"; exit 1; }
 
 echo "== 2/6 kernel modules (containers cannot load these themselves)"
-MODS="bridge ip_gre sit ip6_tunnel nf_tables nf_nat"
+MODS="bridge ip_gre sit ip6_tunnel nf_tables nf_nat tun"   # tun: tayga (NAT64) in Lab 2
 for m in $MODS; do modprobe "$m"; done
 printf '%s\n' $MODS > /etc/modules-load.d/ipv6lab.conf
 

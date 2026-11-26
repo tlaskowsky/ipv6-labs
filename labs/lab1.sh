@@ -27,11 +27,16 @@ RADVD_CONF='interface eth0 {
         AdvOnLink on;
         AdvAutonomous on;
     };
+    prefix fd12:3456:789a:1::/64 {
+        AdvOnLink on;
+        AdvAutonomous on;
+    };
 };'
 
 lab_solve() {
   X r1 "sysctl -qw net.ipv6.conf.all.forwarding=1
         ip -6 addr add 2001:db8:a::1/64 dev eth0 2>/dev/null || true
+        ip -6 addr add fd12:3456:789a:1::1/64 dev eth0 2>/dev/null || true
         cat > /etc/radvd.conf <<'R'
 $RADVD_CONF
 R
@@ -54,4 +59,19 @@ lab_check() {
          X pc1 "ip -6 route show default | grep -q 'via fe80::5054:ff:fea1:fe'"
   expect "pc1 can ping pc2 global address" X pc1 "ping -6 -c1 -W2 2001:db8:a:0:5054:ff:fea1:2"
   expect "pc1 can ping r1 2001:db8:a::1"   X pc1 "ping -6 -c1 -W2 2001:db8:a::1"
+  # Part G: ULA prefix next to the global one
+  expect "r1 has ULA fd12:3456:789a:1::1/64 on eth0" \
+         X r1 "ip -6 addr show dev eth0 | grep -q 'fd12:3456:789a:1::1/64'"
+  expect "pc1 got ULA SLAAC address fd12:3456:789a:1:5054:ff:fea1:1" \
+         retry 20 X pc1 "ip -6 addr show dev eth0 | grep -q 'fd12:3456:789a:1:5054:ff:fea1:1/64'"
+  expect "pc1 can ping r1 ULA fd12:3456:789a:1::1" X pc1 "ping -6 -c1 -W2 fd12:3456:789a:1::1"
+  # Put-it-back steps D2, E3, K2, L5
+  expect "pc1 has no leftover test addresses 2001:db8:a::1 or ::99 (D2, E3)" \
+         X pc1 "! ip -6 addr show dev eth0 | grep -qE '2001:db8:a::(1|99)/64'"
+  expect "pc2 has no temporary address (privacy addresses off again, K2)" \
+         X pc2 "! ip -6 addr show dev eth0 | grep -q temporary"
+  expect "pc1 and pc2 have no IPv4 test addresses (L5)" lab1_no_v4
+}
+lab1_no_v4() {
+  X pc1 "! ip -4 addr show dev eth0 | grep -q 'inet '" && X pc2 "! ip -4 addr show dev eth0 | grep -q 'inet '"
 }

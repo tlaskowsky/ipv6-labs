@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       iproute2 iputils-ping iputils-tracepath traceroute tcpdump \
       radvd dnsmasq-base isc-dhcp-client nftables ndisc6 sipcalc \
       curl python3 procps less nano vim-tiny bash-completion \
+      tayga unbound dnsutils \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /lab
 

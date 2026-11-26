@@ -47,6 +47,11 @@ lab_check() {
          retry 20 X pc2 "ip -6 addr show dev eth0 | grep -q '2001:db8:b:0:5054:ff:fea3:2/64'"
   expect "r1 has a tunnel interface that is up" X r1 "ip -d link show | grep -Eq '(gre|sit|ipip)[^ ]* remote'"
   expect "pc1 pings pc2 over IPv6 through the tunnel" X pc1 "ping -6 -c2 -W2 2001:db8:b:0:5054:ff:fea3:2"
+  # Parts F, G, I and J change things and put them back; check that nothing was left behind
+  expect "r1 has no test route for 2001:db8:c::/64 left (Part F)" X r1 "! ip -6 route | grep -q '2001:db8:c::'"
+  expect "r2 sends Router Advertisements with radvd again, no DHCPv6 server left (Part I)" \
+         X r2 "pgrep -x radvd && ! pgrep -x dnsmasq"
+  expect "r2 has no firewall tables left (Parts G and J)" X r2 "! nft list tables 2>/dev/null | grep -q ."
   # Prove the packets cross inet as IPv4 (GRE = proto 47, 6in4 = proto 41)
   X inet "rm -f /tmp/cap; (timeout 6 tcpdump -c1 -ni eth0 'ip proto 47 or ip proto 41' > /tmp/cap 2>/dev/null &)"
   sleep 1; X pc1 "ping -6 -c3 -W1 2001:db8:b:0:5054:ff:fea3:2" >/dev/null 2>&1; sleep 2
